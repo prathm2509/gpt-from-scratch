@@ -52,11 +52,19 @@ plumbing is proven.
 - **weight tying** (token embedding == output projection)
 - **scaled residual init** (std 0.02 / √(2·n_layer))
 
-## Rough targets (tiny-shakespeare, char-level)
+## Results (tiny-shakespeare, char-level, 3000 iters)
 | model | val loss | output |
 |---|---|---|
-| bigram baseline | ~2.45 | gibberish |
-| small GPT (4 layer, 128 dim) | ~1.5 | semi-coherent English |
+| uniform guessing | 4.174 | — |
+| bigram baseline | 2.49 | `Whencoughefran` |
+| GPT (4 layer, 4 head, n_embd 128, 808K params) | **1.79** | speaker tags, real words, line breaks |
+
+Both curves were still descending at 3000 iterations — this is not converged.
+Training longer is the cheapest improvement available.
+
+Verified along the way: init loss 4.185 against ln(65) = 4.174; single-batch
+overfit reaches 0.09 (the bigram floors at 2.3, having no context); causality
+holds across all layers.
 
 ## Files
 | file | role |
@@ -64,7 +72,22 @@ plumbing is proven.
 | `config.py` | all hyperparameters |
 | `tokenizer.py` | char-level encode/decode |
 | `data.py` | corpus → batches of (x, next-token) |
-| `model.py` | bigram baseline **+ your GPT to build** |
+| `model.py` | bigram baseline, Head, MultiHeadAttention, FeedForward, Block, GPT |
 | `train.py` | training loop + the two sanity checks |
 | `sample.py` | generate from a checkpoint |
+| `prompt.py` | interactive: type a prompt, watch the model continue it |
 | `prepare_data.py` | fetch the corpus |
+
+## Try it
+```
+python prompt.py                 # type a prompt at the >>> and see it continue
+python prompt.py --temp 0.5      # more conservative sampling
+python prompt.py --top-k 10      # only sample from the 10 likeliest characters
+```
+
+## Credits
+Structure follows Andrej Karpathy's "Let's build GPT from scratch" and
+[nanoGPT](https://github.com/karpathy/nanoGPT). Architecture from Vaswani et al.,
+*Attention Is All You Need* (2017); Radford et al., GPT-2 (2019); Brown et al.,
+*Language Models are Few-Shot Learners* (2020). Corpus is the tiny-shakespeare
+dataset from Karpathy's char-rnn.
