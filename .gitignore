@@ -1,0 +1,18 @@
+# Corpus — regenerate with `python prepare_data.py`
+input.txt
+
+# Model checkpoints (binary, rewritten every training run)
+ckpt.pt
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
