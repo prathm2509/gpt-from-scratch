@@ -2,15 +2,16 @@
 Switch the model class to GPT once you've built and trained it."""
 import torch
 from data import load_data
-from model import BigramLanguageModel   # , GPT
+from model import BigramLanguageModel, GPT
 from config import GPTConfig, TrainConfig
 
 
 def main():
     tcfg = TrainConfig()
     tok, _, _ = load_data("input.txt")
-    model = BigramLanguageModel(tok.vocab_size).to(tcfg.device)
-    # gcfg = GPTConfig(vocab_size=tok.vocab_size); model = GPT(gcfg).to(tcfg.device)
+    # model = BigramLanguageModel(tok.vocab_size).to(tcfg.device)   # milestone 1 baseline
+    gcfg = GPTConfig(vocab_size=tok.vocab_size)
+    model = GPT(gcfg).to(tcfg.device)
 
     ckpt = torch.load("ckpt.pt", map_location=tcfg.device)
     model.load_state_dict(ckpt["model"])

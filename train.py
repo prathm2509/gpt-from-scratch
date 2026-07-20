@@ -10,7 +10,7 @@ import math
 import torch
 
 from data import load_data, get_batch
-from model import BigramLanguageModel   # , GPT
+from model import BigramLanguageModel, GPT
 from config import GPTConfig, TrainConfig
 
 
@@ -44,8 +44,8 @@ def main():
     tok, train_data, val_data = load_data("input.txt")
     gcfg = GPTConfig(vocab_size=tok.vocab_size)
 
-    model = BigramLanguageModel(tok.vocab_size).to(tcfg.device)
-    # model = GPT(gcfg).to(tcfg.device)        # <- switch to this after milestone 4
+    # model = BigramLanguageModel(tok.vocab_size).to(tcfg.device)   # milestone 1 baseline
+    model = GPT(gcfg).to(tcfg.device)
     print(f"device={tcfg.device}  vocab={tok.vocab_size}  "
           f"params={sum(p.numel() for p in model.parameters()):,}")
 

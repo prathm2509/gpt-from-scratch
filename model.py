@@ -108,7 +108,26 @@ class GPT(nn.Module):
         self.blocks = nn.Sequential(*[Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f = nn.LayerNorm(cfg.n_embd)
         self.lm_head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias = False)
-        self.lm_head.weight = self.token_emb.weight 
+        self.lm_head.weight = self.token_emb.weight
+
+        # GPT-2 init. Not cosmetic: nn.Embedding defaults to N(0,1), and because
+        # of weight tying that same big matrix IS lm_head - so logits start huge
+        # and the initial loss lands ~20x above ln(vocab).
+        self.apply(self._init_weights)
+        # Scaled residual init: every layer adds into the residual stream, so its
+        # variance grows with depth. Shrink the projections that write into it by
+        # 1/sqrt(2*n_layer) (2 per block: attn out-proj and ffwd's 2nd linear).
+        for name, p in self.named_parameters():
+            if name.endswith("proj.weight") or name.endswith("net.2.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / (2 * cfg.n_layer) ** 0.5)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -127,7 +146,7 @@ class GPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens):
-        for _ in max_new_tokens:
+        for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.cfg.block_size:]
             logits, _ = self(idx_cond)
             logits = logits[:,-1,:]
