@@ -12,7 +12,12 @@ class GPTConfig:
     n_layer: int = 4
     n_head: int = 4
     n_embd: int = 128
-    dropout: float = 0.2      # raised from 0.1: train-val gap hit 0.21 at 10k iters
+    dropout: float = 0.1      # 0.2 was tried and appears to have hurt (see README)
+    # Position encoding: RoPE rotates q/k inside attention (relative position,
+    # zero parameters) instead of adding a learned absolute embedding at the
+    # bottom. Flip to False to A/B against learned positional embeddings.
+    use_rope: bool = True
+    rope_theta: float = 10000.0
 
 
 @dataclass

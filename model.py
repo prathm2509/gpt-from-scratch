@@ -53,6 +53,40 @@ class Head(nn.Module):
         return wei @ v                                          # (B, T, head_size)
 
 
+def rope_tables(head_size, block_size, theta=10000.0):
+    """Precompute cos/sin for every position, once at construction time.
+
+    Pair up the head_size dims as (i, i + head_size/2). Pair i rotates at
+    frequency theta**(-2i/head_size) - the same geometric progression the 2017
+    sinusoidal encoding used. Early pairs spin fast (local structure), later
+    pairs spin slowly (long-range). Returns two (block_size, head_size) tensors.
+    """
+    inv_freq = 1.0 / (theta ** (torch.arange(0, head_size, 2).float() / head_size))
+    angles = torch.outer(torch.arange(block_size).float(), inv_freq)  # (T, hs/2)
+    angles = torch.cat([angles, angles], dim=-1)                      # (T, hs)
+    return angles.cos(), angles.sin()
+
+
+def rotate_half(x):
+    """[x1, x2] -> [-x2, x1]: the 90-degree partner needed for a 2D rotation."""
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rope(x, cos, sin):
+    """Rotate each dim-pair of x by its position's angle.
+
+    x is (B, h, T, hs); cos/sin are (T, hs) and broadcast over B and h. For a
+    pair (a, b) at angle t this computes the standard 2D rotation
+        a' = a*cos(t) - b*sin(t)
+        b' = b*cos(t) + a*sin(t)
+    Because rotations compose (R_m^T R_n = R_{n-m}), the dot product between a
+    query at position m and a key at position n ends up depending only on m-n.
+    That is the whole point: absolute rotations in, relative distance out.
+    """
+    return x * cos + rotate_half(x) * sin
+
+
 class MultiHeadAttention(nn.Module):
     """All heads in one batched matmul, instead of a Python loop over Head.
 
@@ -81,6 +115,13 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(cfg.dropout)             # on the residual output
         self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
 
+        # RoPE tables are constants, not parameters - buffers so they follow .to(device).
+        self.use_rope = cfg.use_rope
+        if self.use_rope:
+            cos, sin = rope_tables(self.head_size, cfg.block_size, cfg.rope_theta)
+            self.register_buffer("rope_cos", cos)
+            self.register_buffer("rope_sin", sin)
+
     def forward(self, x):
         B, T, C = x.shape
 
@@ -89,6 +130,13 @@ class MultiHeadAttention(nn.Module):
         q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)
         k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+
+        # Position enters here, not at the embedding layer - and only on q/k.
+        # v is left alone: position should decide WHO attends to whom, not WHAT
+        # information gets passed along once they do.
+        if self.use_rope:
+            q = apply_rope(q, self.rope_cos[:T], self.rope_sin[:T])
+            k = apply_rope(k, self.rope_cos[:T], self.rope_sin[:T])
 
         att = q @ k.transpose(-2, -1) * self.head_size ** -0.5      # (B, h, T, T)
         att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
@@ -137,7 +185,11 @@ class GPT(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.n_embd)
-        self.pos_emb = nn.Embedding(cfg.block_size, cfg.n_embd)
+        # With RoPE there is no positional table at all - position is applied
+        # inside every attention layer instead of added once at the bottom.
+        self.use_rope = cfg.use_rope
+        if not cfg.use_rope:
+            self.pos_emb = nn.Embedding(cfg.block_size, cfg.n_embd)
         self.blocks = nn.Sequential(*[Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f = nn.LayerNorm(cfg.n_embd)
         self.lm_head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias = False)
@@ -164,9 +216,9 @@ class GPT(nn.Module):
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
-        tok = self.token_emb(idx)
-        pos = self.pos_emb(torch.arange(T, device=idx.device))
-        x = tok + pos
+        x = self.token_emb(idx)
+        if not self.use_rope:
+            x = x + self.pos_emb(torch.arange(T, device=idx.device))
 
         x = self.blocks(x)
         x = self.ln_f(x)
