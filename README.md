@@ -52,19 +52,75 @@ plumbing is proven.
 - **weight tying** (token embedding == output projection)
 - **scaled residual init** (std 0.02 / √(2·n_layer))
 
-## Results (tiny-shakespeare, char-level, 3000 iters)
-| model | val loss | output |
-|---|---|---|
-| uniform guessing | 4.174 | — |
-| bigram baseline | 2.49 | `Whencoughefran` |
-| GPT (4 layer, 4 head, n_embd 128, 808K params) | **1.79** | speaker tags, real words, line breaks |
+## Beyond GPT-2: RoPE
+`cfg.use_rope` (default on) swaps learned absolute positional embeddings for
+**rotary position embeddings**, the scheme used by Llama, Mistral and most
+models since. Instead of adding a position vector at the bottom of the network,
+each attention layer rotates `q` and `k` by an angle proportional to position —
+never `v`, since position should decide *who attends to whom*, not *what*
+information flows.
 
-Both curves were still descending at 3000 iterations — this is not converged.
-Training longer is the cheapest improvement available.
+Because rotations compose (`Rₘᵀ Rₙ = Rₙ₋ₘ`), the resulting `q·k` score depends
+only on the **distance** `m − n`, not on absolute positions. Relative position
+falls out of the geometry with zero learned parameters, and there is no lookup
+table to run out of, so context length stops being a hard architectural cap.
+
+```
+python train.py --rope off --iters 5000 --out ckpt_norope.pt
+python train.py --rope on  --iters 5000 --out ckpt_rope.pt
+```
+
+## Results (tiny-shakespeare, char-level)
+
+| model | iters | val loss | output |
+|---|---|---|---|
+| uniform guessing | — | 4.174 | — |
+| bigram baseline | 3k | 2.49 | `Whencoughefran` |
+| GPT, learned pos emb | 3k | 1.79 | speaker tags, real words, line breaks |
+| GPT, learned pos emb | 10k | 1.58 | — |
+| **GPT + RoPE** | **5k** | **1.57** | — |
 
 Verified along the way: init loss 4.185 against ln(65) = 4.174; single-batch
 overfit reaches 0.09 (the bigram floors at 2.3, having no context); causality
 holds across all layers.
+
+### Experiment log
+
+Kept honestly, including what did not work.
+
+**Batched attention** — replacing the `ModuleList` head loop with one fused
+qkv projection: identical parameters and outputs, 276.7 → 188.2 ms/step
+(1.47×). No effect on loss; it buys iterations per hour.
+
+**Training longer** — 3k → 10k iterations took val 1.786 → 1.581 with no
+architectural change. The model had simply been stopped early, not converged.
+
+**block_size 64→128 + dropout 0.1→0.2 + cosine LR** — *regression*, val
+1.5811 → 1.5931. Three changes in one run, so attribution is impossible;
+dropout is the leading suspect, since the train-val gap was only 0.21 and
+the model is capacity-bound at ~800K params. Dropout was reverted. Lesson:
+bundle changes only when you are willing to give up knowing which one acted.
+
+**RoPE vs learned positional embeddings** — controlled A/B, 5k iters, same
+seed, same data order, same fixed eval batches, one variable changed:
+
+| | train | val | gap |
+|---|---|---|---|
+| learned pos emb | 1.4801 | 1.6666 | 0.187 |
+| RoPE | 1.3594 | **1.5696** | 0.210 |
+
+RoPE wins by **0.097 val**, far more than the 0.02–0.05 typically reported at
+scale. Three plausible reasons, all specific to a small model: capacity is the
+binding constraint here and RoPE spends none of it learning what position
+means; position is re-injected at every layer rather than added once at the
+bottom and expected to survive four layers of mixing; and at 5k iterations a
+learned table is still being learned while RoPE works from step 0. RoPE also
+overfits faster (larger gap), so dropout may earn its place at longer runs.
+
+*Measurement note:* evaluation switched from fresh random batches to a fixed
+set drawn once, because random batches carried noise (~0.02) comparable to the
+effects being measured. Numbers before and after that change are not strictly
+comparable.
 
 ## Files
 | file | role |
