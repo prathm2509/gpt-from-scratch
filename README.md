@@ -141,6 +141,32 @@ python prompt.py --temp 0.5      # more conservative sampling
 python prompt.py --top-k 10      # only sample from the 10 likeliest characters
 ```
 
+## Running on a GPU (Colab)
+
+No code changes are needed — `config.py` picks the device automatically and
+every path in the project is relative. Set *Runtime → Change runtime type →
+T4 GPU*, then:
+
+```python
+!git clone https://github.com/prathm2509/gpt-from-scratch.git
+%cd gpt-from-scratch
+!python prepare_data.py
+
+from google.colab import drive          # Colab's disk is wiped on disconnect
+drive.mount('/content/drive')
+
+!python -u train.py --rope on --iters 10000 \
+    --out /content/drive/MyDrive/ckpt_rope_10k.pt
+```
+
+`prompt.py` is interactive, so in a notebook pipe a prompt in instead:
+`!echo "ROMEO:" | python prompt.py --tokens 400`.
+
+At the default size (800K params, batch 32×128) the model is too small to
+saturate a GPU and the gain is modest — kernel-launch overhead dominates. The
+payoff is in scaling: measured on this CPU, 10k iterations costs 2.7 h at
+4 layers / 128 dim, 9.4 h at 6 / 256, and 16.6 h at 6 / 384.
+
 ## Credits
 Structure follows Andrej Karpathy's "Let's build GPT from scratch" and
 [nanoGPT](https://github.com/karpathy/nanoGPT). Architecture from Vaswani et al.,
