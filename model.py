@@ -54,19 +54,52 @@ class Head(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
+    """All heads in one batched matmul, instead of a Python loop over Head.
+
+    Mathematically identical to the ModuleList version (same parameter count),
+    but the head dimension becomes a tensor axis rather than a for-loop, so the
+    whole thing is 4 matmuls instead of 4*3+1. Head is kept above for reference.
+
+    Shapes, with C = n_embd, h = n_head, hs = head_size:
+        x            (B, T, C)
+        c_attn(x)    (B, T, 3C)          one fused q/k/v projection
+        q, k, v      (B, T, C)  each     -> view/transpose -> (B, h, T, hs)
+        att          (B, h, T, T)        masked, softmaxed
+        att @ v      (B, h, T, hs)       -> transpose/view -> (B, T, C)  = the concat
+    """
     def __init__(self, cfg):
         super().__init__()
         assert cfg.n_embd % cfg.n_head == 0
-        head_size = cfg.n_embd // cfg.n_head
-        self.heads = nn.ModuleList([Head(cfg, head_size) for _ in range(cfg.n_head)])
+        self.n_head = cfg.n_head
+        self.n_embd = cfg.n_embd
+        self.head_size = cfg.n_embd // cfg.n_head
+
+        # Fused q, k, v in a single matmul (3C wide, split apart in forward).
+        self.c_attn = nn.Linear(cfg.n_embd, 3 * cfg.n_embd, bias=False)
         self.proj = nn.Linear(cfg.n_embd, cfg.n_embd)      # w_o: mixes across heads
-        self.dropout = nn.Dropout(cfg.dropout)
+        self.attn_dropout = nn.Dropout(cfg.dropout)        # on the attention weights
+        self.dropout = nn.Dropout(cfg.dropout)             # on the residual output
+        self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
+
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim = -1)
-        out = self.proj(out)
-        out = self.dropout(out)
-        return out 
-        
+        B, T, C = x.shape
+
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)          # 3x (B, T, C)
+        # (B, T, C) -> (B, T, h, hs) -> (B, h, T, hs): head becomes a batch axis
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+
+        att = q @ k.transpose(-2, -1) * self.head_size ** -0.5      # (B, h, T, T)
+        att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        att = F.softmax(att, dim=-1)
+        att = self.attn_dropout(att)
+
+        y = att @ v                                                 # (B, h, T, hs)
+        # transpose back and flatten the head axis - this IS the concatenation
+        y = y.transpose(1, 2).contiguous().view(B, T, C)            # (B, T, C)
+        return self.dropout(self.proj(y))
+
 
 
 class FeedForward(nn.Module):

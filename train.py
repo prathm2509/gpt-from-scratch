@@ -81,19 +81,60 @@ def main():
         print("  bigram   -> expect ~2.3  (no context, so it cannot memorize. not a bug)")
         return
 
+    # Warmup + cosine decay. Linear ramp for the first `warmup` steps (large
+    # early steps on random weights are destructive), then a cosine anneal from
+    # peak LR down to 10% of peak - a constant LR never settles into a minimum,
+    # it bounces around one at full step size forever.
+    warmup = 200
+    def lr_scale(step):
+        if step < warmup:
+            return (step + 1) / warmup
+        t = (step - warmup) / max(1, max_iters - warmup)
+        return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * t))
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_scale)
+
     splits = {"train": train_data, "val": val_data}
+    # At ~41 passes over the corpus the model can start memorizing rather than
+    # generalizing. Instead of guessing where that line is, keep the checkpoint
+    # from the LOWEST val loss - if val starts climbing, the saved model is
+    # already the good one and the extra iterations simply cost time, not quality.
+    best_val = float("inf")
     for i in range(max_iters):
         if i % tcfg.eval_interval == 0:
             l = estimate_loss(model, splits, tcfg, gcfg.block_size)
-            print(f"iter {i:5d}  train {l['train']:.4f}  val {l['val']:.4f}")
+            flag = ""
+            if l["val"] < best_val:
+                best_val = l["val"]
+                torch.save({"model": model.state_dict(), "stoi": tok.stoi,
+                            "itos": tok.itos, "val": best_val, "iter": i}, "ckpt.pt")
+                flag = "  *best"
+            print(f"iter {i:5d}  train {l['train']:.4f}  val {l['val']:.4f}  "
+                  f"gap {l['val']-l['train']:.3f}  lr {sched.get_last_lr()[0]:.2e}{flag}")
         x, y = get_batch(train_data, gcfg.block_size, tcfg.batch_size, tcfg.device)
         _, loss = model(x, y)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
+        sched.step()
 
-    torch.save({"model": model.state_dict(), "stoi": tok.stoi, "itos": tok.itos}, "ckpt.pt")
-    print("saved ckpt.pt")
+    # Final eval AFTER the last step, so the reported number describes the model
+    # that actually gets saved. Without this the last eval is at max_iters -
+    # eval_interval and the checkpoint is silently better than the printed loss.
+    l = estimate_loss(model, splits, tcfg, gcfg.block_size)
+    print(f"FINAL {max_iters:5d}  train {l['train']:.4f}  val {l['val']:.4f}  "
+          f"gap {l['val']-l['train']:.3f}")
+
+    # Only overwrite if the final model actually beat the best one seen. Saving
+    # unconditionally here would throw away a better mid-run checkpoint.
+    if l["val"] < best_val:
+        best_val = l["val"]
+        torch.save({"model": model.state_dict(), "stoi": tok.stoi,
+                    "itos": tok.itos, "val": best_val, "iter": max_iters}, "ckpt.pt")
+        print(f"saved ckpt.pt (final was best, val {best_val:.4f})")
+    else:
+        ck = torch.load("ckpt.pt", map_location="cpu", weights_only=False)
+        print(f"kept earlier ckpt.pt from iter {ck['iter']} (val {ck['val']:.4f}) "
+              f"- final val {l['val']:.4f} was worse, i.e. it overfit past that point")
 
 
 if __name__ == "__main__":
