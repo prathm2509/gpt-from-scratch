@@ -87,6 +87,17 @@ def main():
     max_iters = args.iters or tcfg.max_iters
     print(f"lr={lr}  iters={max_iters}")
 
+    # Mixed precision: run the heavy matmuls in fp16 on the GPU's tensor cores
+    # (idle in fp32), then keep master weights in fp32. Only on CUDA - a T4 is
+    # Turing, so fp16 (not bf16). The GradScaler scales the loss up before the
+    # backward pass so small fp16 gradients don't underflow to zero, then unscales
+    # before the optimizer step. On CPU everything is disabled and this is a no-op.
+    device_type = "cuda" if "cuda" in tcfg.device else "cpu"
+    use_amp = device_type == "cuda"
+    scaler = torch.amp.GradScaler(device_type, enabled=use_amp)
+    if use_amp:
+        print("mixed precision: fp16 autocast + GradScaler")
+
     # --- SANITY CHECK 2: overfit a single batch. A model with context and
     #     enough capacity can simply memorize it, so loss -> ~0. If your GPT
     #     can't, forward/backward has a bug.
@@ -139,10 +150,12 @@ def main():
             print(f"iter {i:5d}  train {l['train']:.4f}  val {l['val']:.4f}  "
                   f"gap {l['val']-l['train']:.3f}  lr {sched.get_last_lr()[0]:.2e}{flag}")
         x, y = get_batch(train_data, gcfg.block_size, tcfg.batch_size, tcfg.device)
-        _, loss = model(x, y)
+        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+            _, loss = model(x, y)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
+        scaler.scale(loss).backward()   # scale loss up so fp16 grads don't underflow
+        scaler.step(opt)                # unscales, then steps (skips step if inf/nan)
+        scaler.update()                 # adjust the scale factor for next iteration
         sched.step()
 
     # Final eval AFTER the last step, so the reported number describes the model
