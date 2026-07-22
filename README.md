@@ -78,7 +78,14 @@ python train.py --rope on  --iters 5000 --out ckpt_rope.pt
 | bigram baseline | 3k | 2.49 | `Whencoughefran` |
 | GPT, learned pos emb | 3k | 1.79 | speaker tags, real words, line breaks |
 | GPT, learned pos emb | 10k | 1.58 | — |
-| **GPT + RoPE** | **5k** | **1.57** | — |
+| GPT + RoPE | 5k | 1.57 | — |
+| **GPT + RoPE, 10.7M params** (T4, fp16) | best @ 2.25k | **1.475** | fluent pseudo-Shakespeare, near-zero invented words |
+
+The 10.7M number matches nanoGPT's reference (~1.48) for the same recipe on the
+same corpus — the signature of a ceiling that belongs to the data, not the code.
+(Caveat: it evaluates at block_size 256 vs 128 for the rows above, and longer
+context alone lowers per-character loss, so part of the 1.57 → 1.475 step is
+context, not scale.)
 
 Verified along the way: init loss 4.185 against ln(65) = 4.174; single-batch
 overfit reaches 0.09 (the bigram floors at 2.3, having no context); causality
@@ -121,6 +128,33 @@ overfits faster (larger gap), so dropout may earn its place at longer runs.
 set drawn once, because random batches carried noise (~0.02) comparable to the
 effects being measured. Numbers before and after that change are not strictly
 comparable.
+
+**Scaling up: 10.7M params on a T4 (fp16)** — a textbook overfitting run, and
+the most instructive curve of the project:
+
+```
+iter     0   train 4.1888   val 4.1963   gap 0.008
+iter  2250   train 1.0863   val 1.4754   gap 0.389   <- val minimum (saved)
+iter  5000   train 0.7190   val 1.6059   gap 0.887
+iter 10000   train 0.3639   val 1.9169   gap 1.553   <- discarded
+```
+
+Val bottomed a quarter of the way in, then climbed for 7,750 iterations while
+train collapsed to 0.36 (perplexity ~1.4: the corpus is memorized). Best-val
+checkpointing kept the iter-2250 model; saving the final model would have
+produced something worse than the 800K-param baseline. At 10.7M params against
+a 1 MB corpus the binding constraint flips from capacity to data — roughly
+0.09 training chars per parameter, versus GPT-3's ~1.7 tokens per parameter,
+which later work (Chinchilla) argued was itself data-starved. The data-limited
+regime of the scaling laws, reproduced on a free Colab GPU.
+
+**Where the ceiling is** — matching the reference number for this recipe means
+further knob-turning buys little: dropout 0.3 is worth maybe −0.02, more
+params or iterations are counterproductive. Significant improvement requires
+more data (tiny-shakespeare is a 1 MB excerpt; the complete works are ~5 MB)
+or BPE tokenization (~4× effective context, though per-token loss is not
+comparable to per-char). Global coherence — text that *means* something —
+is not reachable at this scale; that gap is what the GPT-3 paper is about.
 
 ## Files
 | file | role |
