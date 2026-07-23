@@ -93,7 +93,9 @@ holds across all layers.
 
 ### Experiment log
 
-Kept honestly, including what did not work.
+The full write-up — every run, the failures, and the data-vs-parameters (2×2,
+Chinchilla-by-hand) study — lives in **[EXPERIMENTS.md](EXPERIMENTS.md)**. A
+condensed version follows; kept honestly, including what did not work.
 
 **Batched attention** — replacing the `ModuleList` head loop with one fused
 qkv projection: identical parameters and outputs, 276.7 → 188.2 ms/step
