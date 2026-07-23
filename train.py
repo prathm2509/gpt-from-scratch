@@ -61,6 +61,13 @@ def main():
                     help="override cfg.use_rope, for A/B runs")
     ap.add_argument("--out", type=str, default="ckpt.pt",
                     help="checkpoint filename (use different names per arm)")
+    # Architecture overrides, so a param sweep is a one-liner instead of editing
+    # config.py. Each is a knob for controlled scaling experiments.
+    ap.add_argument("--n_layer", type=int, default=None)
+    ap.add_argument("--n_embd", type=int, default=None)
+    ap.add_argument("--n_head", type=int, default=None)
+    ap.add_argument("--block_size", type=int, default=None)
+    ap.add_argument("--dropout", type=float, default=None)
     args = ap.parse_args()
 
     tcfg = TrainConfig()
@@ -69,6 +76,10 @@ def main():
     gcfg = GPTConfig(vocab_size=tok.vocab_size)
     if args.rope is not None:
         gcfg.use_rope = (args.rope == "on")
+    for name in ("n_layer", "n_embd", "n_head", "block_size", "dropout"):
+        v = getattr(args, name)
+        if v is not None:
+            setattr(gcfg, name, v)
 
     # model = BigramLanguageModel(tok.vocab_size).to(tcfg.device)   # milestone 1 baseline
     model = GPT(gcfg).to(tcfg.device)
